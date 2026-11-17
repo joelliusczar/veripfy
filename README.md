@@ -177,3 +177,7 @@ Some discs need extra information to get the right disc ID:
 | 1 | A file couldn't be read or processed |
 | 2 | Bad usage, or no input files found |
 | 3 | The lookup ran but not every track matched |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
