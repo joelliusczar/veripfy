@@ -9,36 +9,69 @@ optional offset correction, and checks them against the AccurateRip database.
 - [numpy](https://numpy.org/)
 - [ffmpeg](https://ffmpeg.org/) (`ffmpeg` and `ffprobe` must be on your `PATH`)
 
-## Setup
+## Install
 
 ```bash
-./setup.sh
+./install.sh
 ```
 
-This does the following:
+This installs veripfy for your user only, with no root or sudo needed:
 
-- Checks for Python 3.10+ and ffmpeg. If ffmpeg is missing, it prints the
-  install command for your distro.
-- Creates a virtual environment in `.venv` and installs the packages from
-  `requirements.txt` (numpy).
-- Writes a `veripfy` launcher that runs the script with that environment, so
-  you never need to activate it.
+| Path | Contents |
+| --- | --- |
+| `~/.local/share/veripfy/` | A copy of `veripfy.py` and its own virtual environment with numpy |
+| `~/.local/bin/veripfy` | The launcher you run, which is on the PATH on most Linux systems |
 
-`./setup.sh --recreate` rebuilds the environment from scratch.
+Then run `veripfy` from any directory.
 
-To create the environment, the script tries Python's `venv` module first, then
-`virtualenv`. If neither is available, it falls back to the system Python as
-long as numpy is already installed there. On Debian/Ubuntu,
-`sudo apt install python3-venv` provides the `venv` module.
+You can run `./install.sh` as often as you like, with no cleanup in between:
 
-To run `veripfy` from any directory:
+- It copies the current `veripfy.py` each time, so after editing the script,
+  run `./install.sh` again to install your changes.
+- It reuses the existing virtual environment, and only installs Python
+  packages that are missing or out of date.
+- If the virtual environment is broken (for example after a Python upgrade),
+  it rebuilds it.
+- It replaces each file in one step, so an interrupted run never leaves a
+  half-written install.
+
+Other commands:
 
 ```bash
-ln -s "$PWD/veripfy" ~/.local/bin/veripfy
+./install.sh --recreate    # also rebuild the virtual environment from scratch
+./install.sh --uninstall   # remove the installed copy and launcher
 ```
 
-You can still run `./veripfy.py` directly if numpy is installed in your system
-Python. The examples below use `./veripfy.py`; `./veripfy` works the same way.
+More details:
+
+- **ffmpeg:** the script checks for Python 3.10+ and ffmpeg. ffmpeg is a system
+  package pip can't install, so if it's missing the script prints the install
+  command for your distro.
+- **System Python:** packages only ever go into veripfy's own virtual
+  environment, never your system Python.
+- **Creating the environment:** the script tries Python's `venv` module first,
+  then `virtualenv`. If neither is available, it falls back to the system
+  Python as long as numpy is already installed there. On Debian/Ubuntu,
+  `sudo apt install python3-venv` provides the `venv` module.
+- **Existing launcher:** the script won't overwrite a `~/.local/bin/veripfy`
+  that it didn't create.
+- **PATH:** if `~/.local/bin` isn't on your PATH, the script prints the line
+  to add to `~/.bashrc`.
+- **Install location:** set `VERIPFY_HOME` (program files) and/or
+  `VERIPFY_BIN_DIR` (launcher) to install somewhere else, for example
+  `VERIPFY_BIN_DIR=~/bin ./install.sh`. Use the same values with
+  `--uninstall`.
+
+### Running from the repository instead
+
+For working on veripfy itself, `./setup.sh` creates a `.venv` inside the
+repository and a `./veripfy` launcher that runs the repository's copy
+directly, so edits take effect immediately without reinstalling.
+`./setup.sh --recreate` rebuilds that environment.
+
+You can also run `./veripfy.py` directly if numpy is installed in your system
+Python. The examples below use `./veripfy.py`; after installing, `veripfy`
+works the same way.
 
 ## Supported formats
 
