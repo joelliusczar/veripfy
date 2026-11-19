@@ -100,6 +100,10 @@ With an offset correction (for example, a drive read offset of +6 samples):
 Other ways to give it a list:
 
 ```bash
+# No arguments: scan the current directory (add -r to include subfolders)
+cd ~/Music/Album && veripfy
+
+
 # Let the shell expand the glob (sorted alphabetically by bash)
 ./veripfy.py ~/Music/Album/*.flac
 

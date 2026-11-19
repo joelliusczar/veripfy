@@ -532,6 +532,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Compute AccurateRip v1 and v2 checksums for lossless audio files "
                     "and verify them against the AccurateRip database.",
         epilog=(
+            "With no inputs, veripfy scans the current directory (add -r to include "
+            "subdirectories). "
             "Inputs may be files, directories, or glob patterns (quote them to let veripfy "
             "expand them, e.g. '*.flac' or '**/*.flac'). Files are treated as one album in "
             "the order given (glob/directory matches are sorted naturally); in the output "
@@ -542,7 +544,9 @@ def main(argv: list[str] | None = None) -> int:
             "3 lookup done but not every track matched."
         ),
     )
-    p.add_argument("inputs", nargs="+", metavar="FILE|DIR|GLOB")
+    p.add_argument("inputs", nargs="*", metavar="FILE|DIR|GLOB",
+                   help="audio files, directories or glob patterns "
+                        "(default: the current directory)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--tracks", action="store_true",
                       help="treat every file as a middle track (no first/last skipping)")
@@ -597,7 +601,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"veripfy: '{tool}' not found in PATH; please install ffmpeg", file=sys.stderr)
             return 2
 
-    files, problems = expand_inputs(a.inputs, a.recursive)
+    if not a.inputs:
+        print(f"veripfy: no files given; scanning {os.getcwd()}"
+              + (" and its subdirectories" if a.recursive else ""), file=sys.stderr)
+    files, problems = expand_inputs(a.inputs or ["."], a.recursive)
     for msg in problems:
         print(f"veripfy: {msg}", file=sys.stderr)
     if not files:
