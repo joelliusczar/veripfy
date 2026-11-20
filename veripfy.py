@@ -101,10 +101,15 @@ def is_glob(s: str) -> bool:
     return any(c in s for c in "*?[")
 
 
-def expand_inputs(args: list[str], recursive: bool) -> tuple[list[str], list[str]]:
-    """Turn files, directories and glob patterns into an ordered file list."""
+def expand_inputs(args: list[str], recursive: bool, require_log: bool = False
+                  ) -> tuple[list[str], list[str], list[str]]:
+    """Turn files, directories and glob patterns into an ordered file list.
+
+    Returns (files, problems, skipped). With require_log, a directory that
+    holds no rip log (*.log) is left out and listed in `skipped`."""
     files: list[str] = []
     problems: list[str] = []
+    skipped: list[str] = []
     for arg in args:
         arg = os.path.expanduser(arg)
         if os.path.isfile(arg):
@@ -116,6 +121,10 @@ def expand_inputs(args: list[str], recursive: bool) -> tuple[list[str], list[str
                     found += [os.path.join(root, n) for n in names]
             else:
                 found = [os.path.join(arg, n) for n in os.listdir(arg)]
+            if require_log and not any(f.lower().endswith(".log") and os.path.isfile(f)
+                                       for f in found):
+                skipped.append(arg)
+                continue
             found = [f for f in found
                      if os.path.isfile(f) and os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS]
             if not found:
@@ -135,7 +144,7 @@ def expand_inputs(args: list[str], recursive: bool) -> tuple[list[str], list[str
         if key not in seen:
             seen.add(key)
             unique.append(f)
-    return unique, problems
+    return unique, problems, skipped
 
 
 # --------------------------------------------------------------------------- #
@@ -348,6 +357,15 @@ def scan(res: Result, force: bool, offset: int, tags: list[str] | None = None) -
     return res
 
 
+def scan_tags(res: Result, tags: list[str]) -> Result:
+    """Read only the file's tags (for --tags-only): no decoding, no checksums."""
+    try:
+        res.missing_tags = find_missing_tags(probe(res.path)["tags"], tags)
+    except Exception as e:  # noqa: BLE001 - report any failure per file
+        res.error = str(e)
+    return res
+
+
 def finish(results: list[Result], offset: int, linked: bool) -> None:
     """Add the samples each track borrows from its neighbour because of the
     offset, then fix the final checksums. Beyond the disc edges (or when the
@@ -543,15 +561,36 @@ def print_table(results: list[Result], use_color: bool, full_path: bool, offset:
         print(c(colour, f"AccurateRip: {lk.message}"))
 
     if tags is not None:
-        checked = [r for r in results if r.missing_tags is not None]
-        bad = sum(1 for r in checked if r.missing_tags)
+        ok, msg = tags_summary(results, tags)
         if lk is None:
             print()
-        if bad:
-            msg = f"{bad} of {len(checked)} tracks missing tags ({', '.join(tags)})"
-        else:
-            msg = f"all {len(checked)} tracks have {', '.join(tags)}"
-        print(c("33" if bad else "32", f"Tags: {msg}"))
+        print(c("32" if ok else "33", f"Tags: {msg}"))
+
+
+def tags_summary(results: list[Result], tags: list[str]) -> tuple[bool, str]:
+    checked = [r for r in results if r.missing_tags is not None]
+    bad = sum(1 for r in checked if r.missing_tags)
+    if bad:
+        return False, f"{bad} of {len(checked)} tracks missing tags ({', '.join(tags)})"
+    return True, f"every track has {', '.join(tags)}"
+
+
+def print_tags_table(results: list[Result], use_color: bool, full_path: bool,
+                     tags: list[str]) -> None:
+    def c(code: str, s: str) -> str:
+        return f"\033[{code}m{s}\033[0m" if use_color else s
+
+    print(c("1", f"{'Track':>5}  File"))
+    for r in results:
+        name = r.path if full_path else os.path.basename(r.path)
+        print(f"{r.track:>5}  {name}")
+        if r.error:
+            print(c("31", f"{'':7}error: {r.error}"))
+        elif r.missing_tags:
+            print(c("33", f"{'':7}missing tags: {', '.join(r.missing_tags)}"))
+    ok, msg = tags_summary(results, tags)
+    print()
+    print(c("32" if ok else "33", f"Tags: {msg}"))
 
 
 def print_json(results: list[Result], offset: int, lk: Lookup | None,
@@ -605,7 +644,8 @@ def main(argv: list[str] | None = None) -> int:
             "The database lookup needs the complete disc (every track, in order). "
             "Exit status: 0 ok, 1 a file failed, 2 bad usage, "
             "3 lookup done but not every track matched, "
-            "4 tracks are missing tags (with --check-tags)."
+            "4 tracks are missing tags (with --check-tags or --tags-only), "
+            "5 a directory was skipped for having no log (with --require-log)."
         ),
     )
     p.add_argument("inputs", nargs="*", metavar="FILE|DIR|GLOB",
@@ -640,11 +680,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="network timeout for the lookup (default 15)")
     p.add_argument("-r", "--recursive", action="store_true",
                    help="descend into subdirectories of directory arguments")
+    p.add_argument("-l", "--require-log", action="store_true",
+                   help="skip any directory argument that has no rip log (*.log) in it "
+                        "(or, with -r, anywhere below it)")
     p.add_argument("-s", "--sort", action="store_true",
                    help="sort all files naturally by path instead of keeping argument order")
     p.add_argument("-t", "--check-tags", action="store_true",
                    help="also report files missing any of the tags "
                         f"{', '.join(DEFAULT_TAGS)} (change the list with --tags)")
+    p.add_argument("-T", "--tags-only", action="store_true",
+                   help="only check tags: skip the AccurateRip checksums and lookup, and "
+                        "exit with status 4 if any file is missing tags")
     p.add_argument("--tags", metavar="LIST",
                    help="comma-separated tags to require, e.g. "
                         "'title,artist,album,albumartist,track,date'; implies --check-tags")
@@ -671,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
         tags = [t.strip() for t in a.tags.split(",") if t.strip()]
         if not tags:
             p.error("--tags needs at least one tag name")
-    elif a.check_tags:
+    elif a.check_tags or a.tags_only:
         tags = DEFAULT_TAGS
 
     for tool in ("ffmpeg", "ffprobe"):
@@ -682,11 +728,15 @@ def main(argv: list[str] | None = None) -> int:
     if not a.inputs:
         print(f"veripfy: no files given; scanning {os.getcwd()}"
               + (" and its subdirectories" if a.recursive else ""), file=sys.stderr)
-    files, problems = expand_inputs(a.inputs or ["."], a.recursive)
+    # --require-log is about whether to checksum; --tags-only does no checksums.
+    require_log = a.require_log and not a.tags_only
+    files, problems, skipped = expand_inputs(a.inputs or ["."], a.recursive, require_log)
     for msg in problems:
         print(f"veripfy: {msg}", file=sys.stderr)
+    for d in skipped:
+        print(f"veripfy: skipping {d}: no log file found", file=sys.stderr)
     if not files:
-        return 2
+        return 5 if skipped and not problems else 2
     if a.sort:
         files.sort(key=natural_key)
 
@@ -695,6 +745,24 @@ def main(argv: list[str] | None = None) -> int:
     if total < first_no + len(files) - 1:
         print("veripfy: --total is smaller than the number of tracks given", file=sys.stderr)
         return 2
+
+    if a.tags_only:
+        results = [Result(path=f, track=first_no + i) for i, f in enumerate(files)]
+        with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
+            results = list(ex.map(lambda r: scan_tags(r, tags), results))
+        if a.json:
+            json.dump({"checked_tags": tags,
+                       "tracks": [{"file": r.path, "track": r.track,
+                                   "missing_tags": r.missing_tags, "error": r.error}
+                                  for r in results]},
+                      sys.stdout, indent=2)
+            print()
+        else:
+            use_color = not a.no_color and sys.stdout.isatty() and "NO_COLOR" not in os.environ
+            print_tags_table(results, use_color, a.full_path, tags)
+        if problems or any(r.error for r in results):
+            return 1
+        return 4 if any(r.missing_tags for r in results) else 0
 
     results = []
     for i, f in enumerate(files):
@@ -735,6 +803,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     if any(r.missing_tags for r in results):
         return 4
+    if skipped:
+        return 5
     return 0
 
 

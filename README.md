@@ -184,6 +184,23 @@ Some discs need extra information to get the right disc ID:
 ./veripfy.py --db-file dBAR-012-0013bd5a-00b8d489-c60af50d.bin *.flac
 ```
 
+## Requiring a rip log
+
+With `-l` / `--require-log`, each directory you pass (or the current
+directory, if you pass none) must contain a rip log, meaning any file ending
+in `.log` such as an EAC, XLD or whipper log. With `-r` the log can be
+anywhere below the directory. A directory without one is skipped, with a
+message saying so, and isn't checksummed. Files passed by name or glob aren't
+affected.
+
+```bash
+veripfy -l ~/Music/Album/
+```
+
+If any directory was skipped and nothing else went wrong, veripfy exits with
+status 5. `--require-log` has no effect with `--tags-only`, since that does
+no checksums.
+
 ## Checking tags
 
 `-t` / `--check-tags` also checks each file for missing tags. By default it
@@ -215,6 +232,24 @@ spellings from different formats are accepted, so `track` also finds
 `TRACKNUMBER`, `albumartist` finds `ALBUM ARTIST` or `album_artist`, and
 `date` finds `YEAR`. With `--json`, each track gets a `missing_tags` list.
 
+To check only the tags, use `-T` / `--tags-only`. It skips the AccurateRip
+checksums and lookup and doesn't decode the audio, so it's fast. It exits
+with status 4 if any file is missing a tag, and works with `--tags`:
+
+```bash
+veripfy -T ~/Music/Album/ && echo "all tagged"
+```
+
+```
+Track  File
+    1  01 - Intro.flac
+    2  02 - Song Two.flac
+       missing tags: disc, albumartist
+    3  03 - Outro.flac
+
+Tags: 1 of 3 tracks missing tags (title, artist, album, track, disc, albumartist)
+```
+
 ## Options
 
 | Option | Description |
@@ -230,8 +265,10 @@ spellings from different formats are accepted, so `track` also finds
 | `--tracks` | Treat every file as a middle track (no first/last skipping) |
 | `--single` | Treat every file as its own disc (first and last skipping on each) |
 | `-r`, `--recursive` | Look in subfolders of directory arguments |
+| `-l`, `--require-log` | Skip directories that don't contain a rip log (`*.log`) |
 | `-s`, `--sort` | Sort all files naturally instead of keeping argument order |
 | `-t`, `--check-tags` | Also report files missing title, artist, album, track, disc or albumartist |
+| `-T`, `--tags-only` | Only check tags: no checksums or lookup; exit status 4 if any are missing |
 | `--tags LIST` | Comma-separated tags to require instead (turns on the tag check) |
 | `-f`, `--force` | Convert files that aren't CD format (checksums won't match the database) |
 | `-j`, `--jobs N` | Files to process in parallel (default: CPU count) |
@@ -247,7 +284,8 @@ spellings from different formats are accepted, so `track` also finds
 | 1 | A file couldn't be read or processed |
 | 2 | Bad usage, or no input files found |
 | 3 | The lookup ran but not every track matched |
-| 4 | With `--check-tags` or `--tags`: some files are missing tags |
+| 4 | With `--check-tags`, `--tags` or `--tags-only`: some files are missing tags |
+| 5 | With `--require-log`: a directory was skipped because it has no log |
 
 ## License
 
