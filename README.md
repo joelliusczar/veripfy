@@ -184,6 +184,37 @@ Some discs need extra information to get the right disc ID:
 ./veripfy.py --db-file dBAR-012-0013bd5a-00b8d489-c60af50d.bin *.flac
 ```
 
+## Checking tags
+
+`-t` / `--check-tags` also checks each file for missing tags. By default it
+requires `title`, `artist`, `album`, `track`, `disc` and `albumartist`. A tag
+that's present but empty counts as missing.
+
+```bash
+./veripfy.py -t *.flac
+```
+
+```
+Track     Length  AR v1     AR v2     AccurateRip           File
+  1F     4:12.40  41FC55FF  4A142395  match v2 conf 12      01 - Intro.flac
+  2      3:25.25  0F58CF77  128812E7  match v1 conf 5       02 - Song Two.flac
+       missing tags: disc, albumartist
+...
+Tags: 1 of 3 tracks missing tags (title, artist, album, track, disc, albumartist)
+```
+
+To require a different set, pass `--tags` with a comma-separated list (this
+turns on the check by itself):
+
+```bash
+./veripfy.py --tags title,artist,album,albumartist,track,disc,date,genre *.flac
+```
+
+Tag names are matched ignoring case, spaces, `_` and `-`, and common
+spellings from different formats are accepted, so `track` also finds
+`TRACKNUMBER`, `albumartist` finds `ALBUM ARTIST` or `album_artist`, and
+`date` finds `YEAR`. With `--json`, each track gets a `missing_tags` list.
+
 ## Options
 
 | Option | Description |
@@ -200,6 +231,8 @@ Some discs need extra information to get the right disc ID:
 | `--single` | Treat every file as its own disc (first and last skipping on each) |
 | `-r`, `--recursive` | Look in subfolders of directory arguments |
 | `-s`, `--sort` | Sort all files naturally instead of keeping argument order |
+| `-t`, `--check-tags` | Also report files missing title, artist, album, track, disc or albumartist |
+| `--tags LIST` | Comma-separated tags to require instead (turns on the tag check) |
 | `-f`, `--force` | Convert files that aren't CD format (checksums won't match the database) |
 | `-j`, `--jobs N` | Files to process in parallel (default: CPU count) |
 | `--json` | JSON output |
@@ -214,6 +247,7 @@ Some discs need extra information to get the right disc ID:
 | 1 | A file couldn't be read or processed |
 | 2 | Bad usage, or no input files found |
 | 3 | The lookup ran but not every track matched |
+| 4 | With `--check-tags` or `--tags`: some files are missing tags |
 
 ## License
 

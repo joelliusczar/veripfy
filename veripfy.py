@@ -51,6 +51,23 @@ LOSSLESS_CODECS = {
     "flac", "alac", "wavpack", "ape", "tta", "tak", "mlp", "truehd",
 }  # plus every pcm_* codec
 
+DEFAULT_TAGS = ["title", "artist", "album", "track", "disc", "albumartist"]
+
+# Tag names differ between formats (Vorbis comments, ID3, APE, MP4) and ffprobe
+# only partly normalizes them, so each tag name accepts these spellings too.
+# Names are compared lower-case with spaces, '_' and '-' removed.
+TAG_ALIASES = {
+    "title": {"title", "songname", "tit2"},
+    "artist": {"artist", "tpe1"},
+    "album": {"album", "talb"},
+    "track": {"track", "tracknumber", "trackno", "trck"},
+    "disc": {"disc", "discnumber", "discno", "tpos"},
+    "albumartist": {"albumartist", "tpe2"},
+    "date": {"date", "year", "originaldate", "tdrc", "tyer"},
+    "tracktotal": {"tracktotal", "totaltracks"},
+    "disctotal": {"disctotal", "totaldiscs"},
+}
+
 
 @dataclass
 class Result:
@@ -63,6 +80,7 @@ class Result:
     samples: int = 0
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    missing_tags: list[str] | None = None   # None when tags were not checked
     match: str | None = None    # "v2" / "v1" / None after a lookup
     confidence: int = 0         # confidence of the matching entry
     db_confidence: int = 0      # highest confidence for this track in the database
@@ -125,19 +143,42 @@ def expand_inputs(args: list[str], recursive: bool) -> tuple[list[str], list[str
 # --------------------------------------------------------------------------- #
 
 def probe(path: str) -> dict:
+    """Return the first audio stream's properties, with the file's tags
+    (container and stream tags merged) under "tags"."""
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
          "-show_entries",
-         "stream=codec_name,sample_rate,channels,sample_fmt,bits_per_sample,bits_per_raw_sample",
+         "stream=codec_name,sample_rate,channels,sample_fmt,bits_per_sample,bits_per_raw_sample"
+         ":stream_tags:format_tags",
          "-of", "json", path],
         capture_output=True, text=True,
     )
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip() or "ffprobe failed")
-    streams = json.loads(out.stdout).get("streams") or []
+    doc = json.loads(out.stdout)
+    streams = doc.get("streams") or []
     if not streams:
         raise RuntimeError("no audio stream found")
-    return streams[0]
+    info = streams[0]
+    # Stream tags (e.g. Ogg) and container tags (e.g. FLAC, MP4) both count.
+    info["tags"] = {**(doc.get("format") or {}).get("tags", {}), **info.get("tags", {})}
+    return info
+
+
+def norm_tag(name: str) -> str:
+    return re.sub(r"[\s_\-]", "", name.lower())
+
+
+def find_missing_tags(tags: dict, wanted: list[str]) -> list[str]:
+    """Return the names in `wanted` that have no non-empty value in `tags`."""
+    present = {norm_tag(k) for k, v in tags.items() if str(v).strip()}
+    missing = []
+    for name in wanted:
+        n = norm_tag(name)
+        spellings = next((g for g in TAG_ALIASES.values() if n in g), {n})
+        if not spellings & present:
+            missing.append(name)
+    return missing
 
 
 def check_format(info: dict) -> list[str]:
@@ -237,7 +278,7 @@ def check_range(first: bool, last: bool, length: int) -> tuple[int, int]:
             length - LAST_TRACK_SKIP if last else length)
 
 
-def scan(res: Result, force: bool, offset: int) -> Result:
+def scan(res: Result, force: bool, offset: int, tags: list[str] | None = None) -> Result:
     """Decode one file once.
 
     Computes the checksum contribution of the file's own samples with the
@@ -249,6 +290,8 @@ def scan(res: Result, force: bool, offset: int) -> Result:
     """
     try:
         info = probe(res.path)
+        if tags is not None:
+            res.missing_tags = find_missing_tags(info["tags"], tags)
         issues = check_format(info)
         if issues:
             if not force:
@@ -456,7 +499,7 @@ def fmt_len(samples: int) -> str:
 
 
 def print_table(results: list[Result], use_color: bool, full_path: bool, offset: int,
-                lk: Lookup | None) -> None:
+                lk: Lookup | None, tags: list[str] | None = None) -> None:
     def c(code: str, s: str) -> str:
         return f"\033[{code}m{s}\033[0m" if use_color else s
 
@@ -475,6 +518,8 @@ def print_table(results: list[Result], use_color: bool, full_path: bool, offset:
             pad = f"{'':20}  " if looked_up else ""
             print(f"{track}  {'':>9}  {c('31', 'ERROR')}     {'':8}  {pad}{name}")
             print(c("31", f"{'':7}{r.error}"))
+            if r.missing_tags:
+                print(c("33", f"{'':7}missing tags: {', '.join(r.missing_tags)}"))
             continue
         line = f"{track}  {fmt_len(r.samples):>9}  {r.v1:08X}  {r.v2:08X}  "
         if looked_up:
@@ -486,6 +531,8 @@ def print_table(results: list[Result], use_color: bool, full_path: bool, offset:
         print(line + name)
         for w in r.warnings:
             print(c("33", f"{'':7}warning: {w}"))
+        if r.missing_tags:
+            print(c("33", f"{'':7}missing tags: {', '.join(r.missing_tags)}"))
 
     if lk is not None:
         colour = {"matched": "32", "partial": "33", "no-match": "31",
@@ -495,8 +542,20 @@ def print_table(results: list[Result], use_color: bool, full_path: bool, offset:
             print(f"AccurateRip disc ID: {lk.disc_id}")
         print(c(colour, f"AccurateRip: {lk.message}"))
 
+    if tags is not None:
+        checked = [r for r in results if r.missing_tags is not None]
+        bad = sum(1 for r in checked if r.missing_tags)
+        if lk is None:
+            print()
+        if bad:
+            msg = f"{bad} of {len(checked)} tracks missing tags ({', '.join(tags)})"
+        else:
+            msg = f"all {len(checked)} tracks have {', '.join(tags)}"
+        print(c("33" if bad else "32", f"Tags: {msg}"))
 
-def print_json(results: list[Result], offset: int, lk: Lookup | None) -> None:
+
+def print_json(results: list[Result], offset: int, lk: Lookup | None,
+               tags: list[str] | None = None) -> None:
     out = []
     for r in results:
         out.append({
@@ -514,10 +573,14 @@ def print_json(results: list[Result], offset: int, lk: Lookup | None) -> None:
             "warnings": r.warnings,
             "error": r.error,
         })
+        if tags is not None:
+            out[-1]["missing_tags"] = r.missing_tags
     doc = {"offset": offset, "tracks": out}
     if lk is not None:
         doc["lookup"] = {"status": lk.status, "message": lk.message,
                          "disc_id": lk.disc_id, "url": lk.url}
+    if tags is not None:
+        doc["checked_tags"] = tags
     json.dump(doc, sys.stdout, indent=2)
     print()
 
@@ -541,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
             "losslessly - FLAC, WAV, W64, RF64, AIFF, ALAC, WavPack, APE, TTA, TAK. "
             "The database lookup needs the complete disc (every track, in order). "
             "Exit status: 0 ok, 1 a file failed, 2 bad usage, "
-            "3 lookup done but not every track matched."
+            "3 lookup done but not every track matched, "
+            "4 tracks are missing tags (with --check-tags)."
         ),
     )
     p.add_argument("inputs", nargs="*", metavar="FILE|DIR|GLOB",
@@ -578,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="descend into subdirectories of directory arguments")
     p.add_argument("-s", "--sort", action="store_true",
                    help="sort all files naturally by path instead of keeping argument order")
+    p.add_argument("-t", "--check-tags", action="store_true",
+                   help="also report files missing any of the tags "
+                        f"{', '.join(DEFAULT_TAGS)} (change the list with --tags)")
+    p.add_argument("--tags", metavar="LIST",
+                   help="comma-separated tags to require, e.g. "
+                        "'title,artist,album,albumartist,track,date'; implies --check-tags")
     p.add_argument("-f", "--force", action="store_true",
                    help="process non-CD-format files by converting to 44.1kHz/16-bit/stereo")
     p.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1,
@@ -595,6 +665,14 @@ def main(argv: list[str] | None = None) -> int:
             data_track = (start, end)
         except ValueError:
             p.error("--data-track expects START:LEADOUT, e.g. 207106:210385")
+
+    tags = None
+    if a.tags is not None:
+        tags = [t.strip() for t in a.tags.split(",") if t.strip()]
+        if not tags:
+            p.error("--tags needs at least one tag name")
+    elif a.check_tags:
+        tags = DEFAULT_TAGS
 
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
@@ -630,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
         results.append(Result(path=f, track=n, first=first, last=last))
 
     with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
-        results = list(ex.map(lambda r: scan(r, a.force, a.offset), results))
+        results = list(ex.map(lambda r: scan(r, a.force, a.offset, tags), results))
     finish(results, a.offset, linked=not a.single)
 
     # The checksums are complete at this point; the lookup only adds to them.
@@ -646,15 +724,17 @@ def main(argv: list[str] | None = None) -> int:
             lk = lookup(results, a.pregap, data_track, a.db_file, a.timeout)
 
     if a.json:
-        print_json(results, a.offset, lk)
+        print_json(results, a.offset, lk, tags)
     else:
         use_color = not a.no_color and sys.stdout.isatty() and "NO_COLOR" not in os.environ
-        print_table(results, use_color, a.full_path, a.offset, lk)
+        print_table(results, use_color, a.full_path, a.offset, lk, tags)
 
     if problems or any(r.error for r in results):
         return 1
     if lk is not None and lk.status in ("partial", "no-match"):
         return 3
+    if any(r.missing_tags for r in results):
+        return 4
     return 0
 
 
